@@ -1,0 +1,151 @@
+
+import openai
+import pandas as pd
+import concurrent.futures
+
+# Initialize OpenAI API key
+openai.api_key = "API_Key"
+
+# Function to call GPT-3.5 turbo for job information
+def generate_job_info(job_role):
+    prompt = (
+        f"Provide the following information for the job role '{job_role}':\n"
+        "1. Provide a specific range of years of experience required for this job role (e.g., 2-4 years).\n"
+        "2. Exactly 4 key skills required for this job role (provide as a list).\n"
+        "3. Exactly 4 key responsibilities for this job role (provide as a list)."
+    )
+
+    # Use GPT-3.5 Turbo to get the job information
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": "You are an assistant specialized in HR."},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=300,  # Token limit
+        n=1,
+        stop=None,
+        temperature=0.5,  # Lower temperature for faster, more deterministic responses
+    )
+
+    return response['choices'][0]['message']['content']
+
+# Read job roles from Excel sheet
+def read_job_roles_from_excel(file_path):
+    df = pd.read_excel(file_path)
+    return df
+
+# Write the results back to Excel
+def write_job_info_to_excel(job_data, output_file, input_df):
+    # Create a DataFrame from job_data with the same order as input_df
+    result_df = pd.DataFrame(job_data, columns=['Experience Required', 'Skills Required', 'Responsibilities'])
+    
+    # Concatenate the original DataFrame with the result DataFrame
+    merged_df = pd.concat([input_df.reset_index(drop=True), result_df.reset_index(drop=True)], axis=1)
+    
+    # Write to Excel
+    merged_df.to_excel(output_file, index=False)
+
+# Function to parse GPT response and extract experience, skills, and responsibilities
+def parse_job_info(job_info):
+    lines = job_info.strip().split('\n')
+
+    experience = ""
+    skills = []
+    responsibilities = []
+    
+    # Extracting experience, skills, and responsibilities
+    for i, line in enumerate(lines):
+        if line.lower().startswith('1.'):
+            experience = line.replace("1.", "").strip()
+        elif line.lower().startswith('2.'):
+            # Assuming skills are listed as bullet points or numbered items
+            skills = []
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith('3.'):
+                skill = lines[j].strip('-•* ').strip()
+                if skill:
+                    skills.append(skill)
+                j += 1
+            skills = skills[:4]  # Ensure exactly 4 skills
+        elif line.lower().startswith('3.'):
+            # Assuming responsibilities are listed as bullet points or numbered items
+            responsibilities = []
+            j = i + 1
+            while j < len(lines):
+                responsibility = lines[j].strip('-•* ').strip()
+                if responsibility:
+                    responsibilities.append(responsibility)
+                j += 1
+            responsibilities = responsibilities[:4]  # Ensure exactly 4 responsibilities
+
+    # Join skills and responsibilities with newline for Excel display
+    skills_str = '\n'.join(skills)
+    responsibilities_str = '\n'.join(responsibilities)
+    
+    return experience, skills_str, responsibilities_str
+
+# Process job roles concurrently
+def process_job_role_concurrently(job_role):
+    try:
+        job_info = generate_job_info(job_role)
+        return parse_job_info(job_info)
+    except Exception as exc:
+        print(f"Error processing '{job_role}': {exc}")
+        # Return blanks in case of an error
+        return "", "", ""
+
+# Main function
+def process_job_roles(input_file, output_file):
+    # Read the job roles from Excel
+    input_df = read_job_roles_from_excel(input_file)
+    
+    # Check if 'Job Role' column exists
+    if 'Job Role' not in input_df.columns:
+        raise ValueError("Input Excel must contain a 'Job Role' column.")
+    
+    job_roles = input_df['Job Role'].tolist()
+    
+    # Prepare a list to hold the job info data
+    job_data = [None] * len(job_roles)  # Preallocate list for better performance
+    
+    # Use ThreadPoolExecutor for concurrent API calls
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Map each job_role to its index to preserve order
+        future_to_index = {
+            executor.submit(process_job_role_concurrently, job_role): idx 
+            for idx, job_role in enumerate(job_roles)
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_index):
+            idx = future_to_index[future]
+            job_role = job_roles[idx]
+            try:
+                # Collect the result from the future
+                result = future.result()
+                job_data[idx] = result
+                print(f"Successfully processed: {job_role} (Index: {idx+1})")
+            except Exception as exc:
+                # Append blanks in case of an error
+                job_data[idx] = ("", "", "")
+                print(f"{job_role} generated an exception: {exc}")
+
+    # Handle any None entries (in case of unexpected issues)
+    for idx, data in enumerate(job_data):
+        if data is None:
+            job_data[idx] = ("", "", "")
+            print(f"Missing data for index {idx+1}, job role: {job_roles[idx]}")
+
+    # Write the job data back to Excel
+    write_job_info_to_excel(job_data, output_file, input_df)
+    
+    # Print a final completion message
+    print(f"All job roles have been successfully processed and saved to '{output_file}'.")
+
+# Input and Output file paths
+input_file = "C:\\Users\\likit\\Downloads\\cons11.xlsx"  # Input Excel file containing job roles in one column
+output_file = "C:\\Users\\likit\\Downloads\\cons1ansss.xlsx"  # Output Excel file where results will be stored
+
+# Run the process
+if __name__ == "__main__":
+    process_job_roles(input_file, output_file)
